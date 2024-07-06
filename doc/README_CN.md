@@ -51,11 +51,11 @@ chmod +x ./RedGuard&&./RedGuard
 
 如下图，首先对RedGuard赋予可执行权限并进行初始化操作，第一次运行会在当前用户目录下生成配置文件，以实现灵活的功能配置，**配置文件名：.RedGuard_CobaltStrike.ini**。
 
-![1653117707(1).png](https://raw.githubusercontent.com/wikiZ/RedGuardImage/main/1656308555577.jpg)
+![1653117707(1).png](https://raw.githubusercontent.com/wikiZ/RedGuardImage/main/1692550594507.png)
 
 **配置文件内容：**
 
-![1653117707(1).png](https://github.com/wikiZ/RedGuardImage/raw/main/1656310498272.png)
+![1653117707(1).png](https://github.com/wikiZ/RedGuardImage/raw/main/1692550409350.png)
 
 cert的配置选项主要是针对样本与C2前置设施的HTTPS流量交互证书的配置信息，proxy主要用于配置反向代理流量中的控制选项，具体使用会在下面进行详细讲解。
 
@@ -83,13 +83,19 @@ HasCert      = false
 ```bash
 root@VM-4-13-ubuntu:~# ./RedGuard -h
 
-Usage of ./RedGuard.exe:
+Usage of ./RedGuard:
+  -DelHeader string
+        Customize the header to be deleted
   -DropAction string
         RedGuard interception action (default "redirect")
   -EdgeHost string
         Set Edge Host Communication Domain (default "*")
   -EdgeTarget string
         Set Edge Host Proxy Target (default "*")
+  -FieldFinger string
+        Set HTTP Header identification field Info
+  -FieldName string
+        Set the name of the HTTP Header identification field
   -HasCert string
         Whether to use the certificate you have applied for (default "true")
   -allowIP string
@@ -291,6 +297,60 @@ MalleableFile = /root/cobaltstrike/Malleable.profile
 
 > https://github.com/wikiZ/CobaltStrike-Malleable-Profile
 
+## 自定义删除响应字段
+
+在 Cobalt Strike 4.7+ 中，Teamserver 会在没有任何通知的情况下自动删除 Content-Encoding 标头，从而可能导致违反可延展http-(get|post).server。而且如果CS Server响应报文中没有Content-type，但经过RedGuard转发后，在响应报文头中添加了Content-Type，导致cf缓存页面，造成干扰。
+
+在RedGuard 23.08.21版本后增加了自定义响应包Header头的功能，用户可以通过修改配置文件的方式进行自定义删除的响应包中的Header信息，以解决错误解析的问题。
+
+```bash
+# Customize the header to be deleted example: Keep-Alive,Transfer-Encoding
+DelHeader     = Keep-Alive,Transfer-Encoding
+```
+
+## Sample FingerPrint
+
+RedGuard 23.05.13已更新木马样本指纹识别功能，该功能基于对Malleable Profile自定义设置HTTP Header字段作为该指纹“**样本Salt值**”，为相同**C2监听器/**Header Host提供唯一辨识。此外，结合其他相关请求字段生成的木马样本指纹，可用于检测自定义样本存活性。根据攻击方任务要求，木马样本指纹识别功能可针对希望失效的样本进行**“下线操作”**，更好地规避恶意研判流量的样本通联性关联及分阶段样本PAYLOAD攻击载荷获取分析，给予攻击方更加个性化的隐匿措施。
+
+针对不同C2监听器，我们可以给不同的Malleable Profile配置别称、自定义相关header的字段名和值作为样本Salt值，以此作为区分不同样本之间的辨识之一。下列代码是为了方便说明，而在实际攻防场景下我们可以给予更加贴合实际的HTTP请求包字段作为判断依据。
+
+```bash
+http-get "listen2" {
+	set uri "/image.gif";
+	client {
+		header "Accept-Finger" "866e5289337ab033f89bc57c5274c7ca"; //用户自定义字段名及值
+		metadata {
+			print
+		}
+	}
+}
+```
+
+**HTTP流量**
+
+![image.png](https://raw.githubusercontent.com/wikiZ/RedGuardImage/main/10b7b4d8f1d66bbf98e404332bf5d87.png)
+
+如图所示，我们根据上述样本Salt值及Host字段作为指纹生成依据，这里我们已知:
+
+- **Salt值：866e5289337ab033f89bc57c5274c7ca**
+- **Host字段值：redguard.com**
+
+根据对上述值进行拼接得到sample指纹为：
+
+```bash
+22e6db08c5ef1889d64103a290ac145c
+```
+
+目前已知上述样本指纹，现在我们在RedGuard配置文件中设置自定义的Header字段及样本指纹用于恶意流量拦截。值得注意的是，我们可以拓展多个样本指纹，不同指纹之间以逗号分隔，FieldName需要和Malleable Profile中配置的Header字段名称保持一致。
+
+![image.png](https://raw.githubusercontent.com/wikiZ/RedGuardImage/main/aa7488ece6370ff2559400a108664a4.png)
+
+因为RedGuard的配置文件为热配置，所以这里我们不需要重新启停RG即可实现针对希望失效的样本进行拦截，当我们希望该样本重新生效时，只需在RG配置文件中删除相关样本指纹即可实现。
+
+**演示效果**
+
+![image.png](https://raw.githubusercontent.com/wikiZ/RedGuardImage/main/4d37798254ba9b5729ac886f90a10f7.png)
+
 # 0x04 案例分析
 
 ## 空间测绘
@@ -395,6 +455,7 @@ RedGuard接收到请求：
 > https://isc.n.cn/m/pages/live/index?channel_id=iscyY043&ncode=UR6KZ&room_id=1981905&server_id=785016&tab_id=253
 > 
 > 基于边界节点链路交互C2流量
+> 
 > https://www.anquanke.com/post/id/278140
 >
 > 云沙箱流量识别技术剖析
@@ -404,6 +465,10 @@ RedGuard接收到请求：
 > JARM指纹随机化技术实现
 >
 > https://www.anquanke.com/post/id/276546
+>
+> C2 基础设施威胁情报对抗策略
+>
+> https://paper.seebug.org/3022/
 
 **Kunyu: https://github.com/knownsec/Kunyu**
 
